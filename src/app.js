@@ -12,6 +12,15 @@ const push = require("./push");
 const { log4js, cleanLogs, catLogs } = require("./logger");
 const execThreshold = process.env.EXEC_THRESHOLD || 1;
 
+const buildTaskResult = (res, result) => {
+  const index = result.length;
+  if (res.errorCode === "User_Not_Chance") {
+    result.push(`第${index}次抽奖失败,次数不足`);
+  } else {
+    result.push(`第${index}次抽奖成功,抽奖获得${res.prizeName}`);
+  }
+};
+
 // 个人任务签到
 const doUserTask = async (cloudClient, logger) => {
   const tasks = Array.from({ length: execThreshold }, () =>
@@ -23,6 +32,13 @@ const doUserTask = async (cloudClient, logger) => {
       result.map((res) => res.netdiskBonus)?.join(",") || "0"
     }M 空间`
   );
+  await delay(500);
+  const result1 = [];
+  const res2 = await cloudClient.taskSign();
+  buildTaskResult(res2, result1);
+  await delay(500);
+  const res3 = await cloudClient.taskPhoto();
+  buildTaskResult(res3, result1);
 };
 
 // 家庭任务签到
@@ -115,17 +131,27 @@ async function main() {
   for (const [userName, { cloudClient, userSizeInfo, logger } ] of userSizeInfoMap) {
     const afterUserSizeInfo = await cloudClient.getUserSizeInfo();
     logger.log(
-      `个人总容量增加：${(
+      `个人总容量：：${(
+            afterUserSizeInfo.cloudCapacityInfo.totalSize /
+            1024 /
+            1024 /
+            1024
+          ).toFixed(2)}G（增加：${(
         (afterUserSizeInfo.cloudCapacityInfo.totalSize -
           userSizeInfo.cloudCapacityInfo.totalSize) /
         1024 /
         1024
-      ).toFixed(2)}M,家庭容量增加：${(
+      ).toFixed(2)}M）,家庭总容量：${(
+            afterUserSizeInfo.familyCapacityInfo.totalSize /
+            1024 /
+            1024 /
+            1024
+          ).toFixed(2)}G（增加：${(
         (afterUserSizeInfo.familyCapacityInfo.totalSize -
           userSizeInfo.familyCapacityInfo.totalSize) /
         1024 /
         1024
-      ).toFixed(2)}M`
+      ).toFixed(2)}M）`
     );
   }
 }
@@ -134,7 +160,7 @@ async function main() {
   try {
     await main();
     //等待日志文件写入
-    await delay(1000);
+    await delay(500);
   } finally {
     const logs = catLogs();
     const events = recording.replay();
