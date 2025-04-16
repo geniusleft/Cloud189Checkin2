@@ -1,44 +1,28 @@
 require("dotenv").config();
-const { CloudClient } = require("cloud189-sdk");
+const fs = require("fs");
+const { CloudClient, FileTokenStore } = require("cloud189-sdk");
 const recording = require("log4js/lib/appenders/recording");
 const accounts = require("../accounts");
 const families = require("../families");
-const {
-  mask,
-  formatDateISO,
-  delay,
-} = require("./utils");
+const { mask, delay } = require("./utils");
 const push = require("./push");
 const { log4js, cleanLogs, catLogs } = require("./logger");
 const execThreshold = process.env.EXEC_THRESHOLD || 1;
-
-const buildTaskResult = (res, result) => {
-  const index = result.length;
-  if (res.errorCode === "User_Not_Chance") {
-    result.push(`第${index}次抽奖失败,次数不足`);
-  } else {
-    result.push(`第${index}次抽奖成功,抽奖获得${res.prizeName}`);
-  }
-};
+const tokenDir = ".token";
 
 // 个人任务签到
 const doUserTask = async (cloudClient, logger) => {
   const tasks = Array.from({ length: execThreshold }, () =>
     cloudClient.userSign()
   );
-  const result = (await Promise.all(tasks)).filter((res) => !res.isSign);
+  const result = (await Promise.allSettled(tasks)).filter(
+    ({ status, value }) => status === "fulfilled" && !value.isSign && value.netdiskBonus
+  );
   logger.info(
     `个人签到任务: 成功数/总请求数 ${result.length}/${tasks.length} 获得 ${
-      result.map((res) => res.netdiskBonus)?.join(",") || "0"
+      result.map(({ value }) => value.netdiskBonus)?.join(",") || "0"
     }M 空间`
   );
-  await delay(500);
-  const result1 = [];
-  const res2 = await cloudClient.taskSign();
-  buildTaskResult(res2, result1);
-  await delay(500);
-  const res3 = await cloudClient.taskPhoto();
-  buildTaskResult(res3, result1);
 };
 
 // 家庭任务签到
@@ -64,13 +48,13 @@ const doFamilyTask = async (cloudClient, logger) => {
       familyId = familyInfoResp[0].familyId;
     }
     logger.info(`执行家庭签到ID:${familyId}`);
-    const tasks = Array.from({ length: execThreshold }, () =>
-      cloudClient.familyUserSign(familyId)
+    const tasks = [ cloudClient.familyUserSign(familyId) ]
+    const result = (await Promise.allSettled(tasks)).filter(
+      ({ status, value }) => status === "fulfilled" && !value.signStatus && value.bonusSpace
     );
-    const result = (await Promise.all(tasks)).filter((res) => !res.signStatus);
     return logger.info(
-      `家庭签到任务: 成功数/总请求数 ${result.length}/${tasks.length} 获得 ${
-        result.map((res) => res.bonusSpace)?.join(",") || "0"
+      `家庭签到任务: 获得 ${
+        result.map(({ value }) => value.bonusSpace)?.join(",") || "0"
       }M 空间`
     );
   }
@@ -80,12 +64,12 @@ const run = async (userName, password, userSizeInfoMap, logger) => {
   if (userName && password) {
     const before = Date.now();
     try {
-      logger.log('开始执行');
+      logger.log("开始执行");
       const cloudClient = new CloudClient({
-        username: userName, 
-        password
+        username: userName,
+        password,
+        token: new FileTokenStore(`${tokenDir}/${userName}.json`),
       });
-      await cloudClient.login()
       const beforeUserSizeInfo = await cloudClient.getUserSizeInfo();
       userSizeInfoMap.set(userName, {
         cloudClient,
@@ -116,6 +100,9 @@ const run = async (userName, password, userSizeInfoMap, logger) => {
 
 // 开始执行程序
 async function main() {
+  if (!fs.existsSync(tokenDir)) {
+    fs.mkdirSync(tokenDir);
+  }
   //  用于统计实际容量变化
   const userSizeInfoMap = new Map();
   for (let index = 0; index < accounts.length; index++) {
@@ -128,30 +115,34 @@ async function main() {
   }
 
   //数据汇总
-  for (const [userName, { cloudClient, userSizeInfo, logger } ] of userSizeInfoMap) {
+  for (const [
+    userName,
+    { cloudClient, userSizeInfo, logger },
+  ] of userSizeInfoMap) {
     const afterUserSizeInfo = await cloudClient.getUserSizeInfo();
     logger.log(
-      `个人总容量：：${(
-            afterUserSizeInfo.cloudCapacityInfo.totalSize /
-            1024 /
-            1024 /
-            1024
-          ).toFixed(2)}G（增加：${(
+      `个人容量：⬆️  ${(
         (afterUserSizeInfo.cloudCapacityInfo.totalSize -
           userSizeInfo.cloudCapacityInfo.totalSize) /
         1024 /
         1024
-      ).toFixed(2)}M）,家庭总容量：${(
-            afterUserSizeInfo.familyCapacityInfo.totalSize /
-            1024 /
-            1024 /
-            1024
-          ).toFixed(2)}G（增加：${(
+      ).toFixed(2)}M/${(
+        afterUserSizeInfo.cloudCapacityInfo.totalSize /
+        1024 /
+        1024 /
+        1024
+      ).toFixed(2)}G`,
+      `家庭容量：⬆️  ${(
         (afterUserSizeInfo.familyCapacityInfo.totalSize -
           userSizeInfo.familyCapacityInfo.totalSize) /
         1024 /
         1024
-      ).toFixed(2)}M）`
+      ).toFixed(2)}M/${(
+        afterUserSizeInfo.familyCapacityInfo.totalSize /
+        1024 /
+        1024 /
+        1024
+      ).toFixed(2)}G`
     );
   }
 }
@@ -160,7 +151,7 @@ async function main() {
   try {
     await main();
     //等待日志文件写入
-    await delay(500);
+    await delay(1000);
   } finally {
     const logs = catLogs();
     const events = recording.replay();
